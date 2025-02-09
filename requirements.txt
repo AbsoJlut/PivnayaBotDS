@@ -1,0 +1,10 @@
+disnake==2.7.0
+python-dotenv
+asyncio
+youtube_dl
+requests
+twitchAPI
+PyNaCl
+babel
+pytz
+pymysql
