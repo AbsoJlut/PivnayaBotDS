@@ -41,7 +41,8 @@ cogs = [
     "cogs.warn",  # /warn
     # "cogs.warns",  # /warns
     "cogs.twitch_notifier",  # уведомлений о стримах
-    "cogs.welcome"  # уведомлений о стримах
+    "cogs.welcome",  # уведомлений о стримах
+    "cogs.giveaway"  # розыгрыши
 ]
 
 for cog in cogs:
