@@ -42,7 +42,8 @@ cogs = [
     # "cogs.warns",  # /warns
     "cogs.twitch_notifier",  # уведомлений о стримах
     "cogs.welcome",  # уведомлений о стримах
-    "cogs.giveaway"  # розыгрыши
+    "cogs.giveaway",  # розыгрыши
+    "cogs.private_voice"  # создание приватных каналов
 ]
 
 for cog in cogs:
