@@ -1,10 +1,10 @@
 import os
-from dotenv import load_dotenv
+import asyncio
 import disnake
 from disnake.ext import commands
 from disnake.ui import Button, View, Select
-import asyncio
-import pymysql.cursors
+import aiomysql
+from dotenv import load_dotenv
 
 # Загрузка переменных из .env
 load_dotenv()
@@ -14,18 +14,19 @@ DB_HOST = os.getenv('MYSQL_HOST')
 DB_USER = os.getenv('MYSQL_USER')
 DB_PASSWORD = os.getenv('MYSQL_PASSWORD')
 DB_NAME = os.getenv('MYSQL_DB_private_voice')
-
-# ID роли, для которой будут изменяться права подключения
-ROLE_ID = 1227344234391015486  # Замените на ID вашей роли
+MUTE_ROLE_ID = int(os.getenv('MUTE_ROLE_ID'))  # ID роли мута из .env
+ROLE_ID = int(os.getenv('ROLE_ID_DEFAULT'))  # ID роли из .env
+CATEGORY_ID = int(os.getenv('CATEGORY_ID_PRIVATE_VOICE'))  # ID категории из .env
+JOIN_CHANNEL_ID = int(os.getenv('JOIN_CHANNEL_ID_PRIVATE_VOICE'))  # ID канала для присоединения из .env
 
 # Функция для подключения к базе данных
-def get_db_connection():
-    return pymysql.connect(
+async def get_db_connection():
+    return await aiomysql.connect(
         host=DB_HOST,
         user=DB_USER,
         password=DB_PASSWORD,
-        database=DB_NAME,
-        cursorclass=pymysql.cursors.DictCursor
+        db=DB_NAME,
+        cursorclass=aiomysql.DictCursor
     )
 
 class PrivateVoiceChannels(commands.Cog):
@@ -36,7 +37,7 @@ class PrivateVoiceChannels(commands.Cog):
     async def cleanup_channels_on_startup(self):
         """Удаляет все приватные каналы и кикает участников при запуске бота."""
         await self.bot.wait_until_ready()  # Ждем, пока бот полностью загрузится
-        active_channels = self.get_active_channels()
+        active_channels = await self.get_active_channels()
         for channel_id in active_channels:
             channel = self.bot.get_channel(channel_id)
             if channel:  # Проверяем, существует ли канал
@@ -57,26 +58,26 @@ class PrivateVoiceChannels(commands.Cog):
                     print(f"Ошибка при удалении канала {channel_id}: {e}")
 
             # Удаляем запись из базы данных
-            connection = get_db_connection()
+            connection = await get_db_connection()
             try:
-                with connection.cursor() as cursor:
+                async with connection.cursor() as cursor:
                     sql = "DELETE FROM active_channels WHERE channel_voice = %s"
-                    cursor.execute(sql, (channel_id,))
-                connection.commit()
-            except pymysql.Error as e:
+                    await cursor.execute(sql, (channel_id,))
+                await connection.commit()
+            except aiomysql.Error as e:
                 print(f"Ошибка при удалении записи из базы данных для канала {channel_id}: {e}")
             finally:
                 connection.close()
         print("Все приватные каналы удалены, участники кикнуты.")
 
-    def get_active_channels(self):
+    async def get_active_channels(self):
         """Получает активные каналы из базы данных."""
-        connection = get_db_connection()
+        connection = await get_db_connection()
         try:
-            with connection.cursor() as cursor:
+            async with connection.cursor() as cursor:
                 sql = "SELECT channel_voice FROM active_channels"
-                cursor.execute(sql)
-                result = cursor.fetchall()
+                await cursor.execute(sql)
+                result = await cursor.fetchall()
                 return [row['channel_voice'] for row in result]  # Возвращаем список ID каналов
         finally:
             connection.close()
@@ -84,16 +85,22 @@ class PrivateVoiceChannels(commands.Cog):
     async def create_private_channel(self, member):
         """Создает приватный голосовой канал."""
         guild = member.guild
-        category_id = 1341728865273512010  # ID категории
-        category = disnake.utils.get(guild.categories, id=category_id)
+        category = disnake.utils.get(guild.categories, id=CATEGORY_ID)
         if category is None:
             category = await guild.create_category(name='Приватные каналы')
 
         # Настройка прав доступа
         role = guild.get_role(ROLE_ID)
+        mute_role = guild.get_role(MUTE_ROLE_ID)  # Получаем роль мута
+        
         overwrites = {
             guild.default_role: disnake.PermissionOverwrite(view_channel=False),
             role: disnake.PermissionOverwrite(connect=True, view_channel=True),
+            mute_role: disnake.PermissionOverwrite(
+                speak=False,              # Запрещаем говорить
+                send_messages=False,      # Запрещаем отправлять сообщения
+                embed_links=False         # Запрещаем встраивать ссылки
+            ),
             member: disnake.PermissionOverwrite(
                 view_channel=True,
                 connect=True,
@@ -114,12 +121,12 @@ class PrivateVoiceChannels(commands.Cog):
         await member.move_to(new_channel)
 
         # Сохраняем данные в БД
-        connection = get_db_connection()
+        connection = await get_db_connection()
         try:
-            with connection.cursor() as cursor:
+            async with connection.cursor() as cursor:
                 sql = "INSERT INTO active_channels (channel_voice, owner_id) VALUES (%s, %s)"
-                cursor.execute(sql, (new_channel.id, member.id))
-            connection.commit()
+                await cursor.execute(sql, (new_channel.id, member.id))
+            await connection.commit()
         finally:
             connection.close()
 
@@ -237,12 +244,12 @@ class PrivateVoiceChannels(commands.Cog):
 
     async def get_channel_owner(self, channel_id):
         """Получает владельца канала из базы данных."""
-        connection = get_db_connection()
+        connection = await get_db_connection()
         try:
-            with connection.cursor() as cursor:
+            async with connection.cursor() as cursor:
                 sql = "SELECT owner_id FROM active_channels WHERE channel_voice = %s"
-                cursor.execute(sql, (channel_id,))
-                result = cursor.fetchone()
+                await cursor.execute(sql, (channel_id,))
+                result = await cursor.fetchone()
                 return result['owner_id'] if result else None
         finally:
             connection.close()
@@ -251,22 +258,22 @@ class PrivateVoiceChannels(commands.Cog):
     async def on_voice_state_update(self, member, before, after):
         """Удаляет канал, если он пуст."""
         if before.channel is not None:
-            active_channels = self.get_active_channels()  # Получаем активные каналы
+            active_channels = await self.get_active_channels()  # Получаем активные каналы
             if before.channel.id in active_channels:  # Проверяем, есть ли канал в списке активных
                 if len(before.channel.members) == 0:
                     await before.channel.delete()
 
                     # Удаляем данные из БД
-                    connection = get_db_connection()
+                    connection = await get_db_connection()
                     try:
-                        with connection.cursor() as cursor:
+                        async with connection.cursor() as cursor:
                             sql = "DELETE FROM active_channels WHERE channel_voice = %s"
-                            cursor.execute(sql, (before.channel.id,))
-                        connection.commit()
+                            await cursor.execute(sql, (before.channel.id,))
+                        await connection.commit()
                     finally:
                         connection.close()
 
-        if after.channel is not None and after.channel.id == 1341730707424411698:  # УКАЖИ ID КАНАЛА НА КОТОРЫЙ БУДУТ НАЖИМАТЬ
+        if after.channel is not None and after.channel.id == JOIN_CHANNEL_ID:
             await self.create_private_channel(member)
 
 def setup(bot):
