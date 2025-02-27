@@ -1,8 +1,8 @@
 import disnake
 from disnake import ButtonStyle
 from disnake.ext import commands
-from disnake.ext.commands import MissingPermissions  # Импортируем исключение
-import pymysql  # Используем pymysql для работы с MySQL
+from disnake.ext.commands import MissingPermissions
+import aiomysql
 import os
 from dotenv import load_dotenv
 import logging
@@ -25,14 +25,14 @@ MYSQL_USER = os.getenv('MYSQL_USER', '')
 MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', '')
 MYSQL_DB = os.getenv('MYSQL_DB_ticket', 'ticket_system')
 
-def get_db_connection():
+async def get_db_connection():
     """Создаёт и возвращает соединение с базой данных MySQL."""
-    return pymysql.connect(
+    return await aiomysql.connect(
         host=MYSQL_HOST,
         user=MYSQL_USER,
         password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
-        cursorclass=pymysql.cursors.DictCursor
+        db=MYSQL_DB,
+        cursorclass=aiomysql.DictCursor
     )
 
 class clb(disnake.ui.View):
@@ -42,13 +42,12 @@ class clb(disnake.ui.View):
 
     @disnake.ui.button(label="Удалить тикет", style=ButtonStyle.danger, emoji='<:ticketbutton:933130024356302898>', custom_id="delete_ticket")
     async def delete_ticket(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
-        # Проверка роли модератора
         if any(role.id in MODER_ROLES for role in interaction.author.roles):
-            connection = get_db_connection()
+            connection = await get_db_connection()
             try:
-                with connection.cursor() as cursor:
-                    cursor.execute('DELETE FROM tickets WHERE id_channel = %s', (interaction.channel.id,))
-                    connection.commit()
+                async with connection.cursor() as cursor:
+                    await cursor.execute('DELETE FROM tickets WHERE id_channel = %s', (interaction.channel.id,))
+                    await connection.commit()
                 await interaction.channel.delete()
             finally:
                 connection.close()
@@ -57,15 +56,14 @@ class clb(disnake.ui.View):
 
     @disnake.ui.button(label="Закрыть тикет", style=ButtonStyle.primary, emoji='<:ticketbutton:933130024356302898>', custom_id="close_ticket")
     async def close_ticket(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
-        # Проверка роли модератора
         if any(role.id in MODER_ROLES for role in interaction.author.roles):
-            connection = get_db_connection()
+            connection = await get_db_connection()
             try:
-                with connection.cursor() as cursor:
-                    cursor.execute('SELECT id_member FROM tickets WHERE id_channel = %s', (interaction.channel.id,))
-                    a = cursor.fetchone()
-                    cursor.execute('DELETE FROM tickets WHERE id_channel = %s', (interaction.channel.id,))
-                    connection.commit()
+                async with connection.cursor() as cursor:
+                    await cursor.execute('SELECT id_member FROM tickets WHERE id_channel = %s', (interaction.channel.id,))
+                    a = await cursor.fetchone()
+                    await cursor.execute('DELETE FROM tickets WHERE id_channel = %s', (interaction.channel.id,))
+                    await connection.commit()
 
                     if a:
                         try:
@@ -74,7 +72,6 @@ class clb(disnake.ui.View):
                                 interaction.guild.default_role: disnake.PermissionOverwrite(view_channel=False, send_messages=False),
                                 member: disnake.PermissionOverwrite(view_channel=False),
                             }
-                            # Добавляем права для всех ролей модераторов
                             for role_id in MODER_ROLES:
                                 role = disnake.utils.get(interaction.guild.roles, id=role_id)
                                 if role:
@@ -90,7 +87,7 @@ class clb(disnake.ui.View):
                         except disnake.NotFound:
                             await interaction.send("Участник не найден. Возможно, он покинул сервер.", ephemeral=True)
                         except Exception as e:
-                            logger.error(f"Ошибка при закрытии тикета: {e}")
+                            logger.error(f"Ошибка при закрытии тикета: {e}", exc_info=True)
                             await interaction.send("Произошла ошибка при закрытии тикета.", ephemeral=True)
                     else:
                         await interaction.send("Тикет не найден в базе данных.", ephemeral=True)
@@ -107,11 +104,11 @@ class ticket_buttons(disnake.ui.View):
 
     @disnake.ui.button(label="Открыть тикет", style=ButtonStyle.primary, emoji='<:ticketbutton:933130024356302898>', custom_id="open_ticket")
     async def open_ticket(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
-        connection = get_db_connection()
+        connection = await get_db_connection()
         try:
-            with connection.cursor() as cursor:
-                cursor.execute('SELECT id_member FROM tickets WHERE id_member = %s', (interaction.author.id,))
-                a1 = cursor.fetchone()
+            async with connection.cursor() as cursor:
+                await cursor.execute('SELECT id_member FROM tickets WHERE id_member = %s', (interaction.author.id,))
+                a1 = await cursor.fetchone()
 
                 if a1 is None:
                     guild = interaction.guild
@@ -119,7 +116,6 @@ class ticket_buttons(disnake.ui.View):
                         guild.default_role: disnake.PermissionOverwrite(view_channel=False),
                         interaction.author: disnake.PermissionOverwrite(view_channel=True),
                     }
-                    # Добавляем права для всех ролей модераторов
                     for role_id in MODER_ROLES:
                         role = disnake.utils.get(interaction.guild.roles, id=role_id)
                         if role:
@@ -132,8 +128,8 @@ class ticket_buttons(disnake.ui.View):
                             category=category,
                             overwrites=overwrites
                         )
-                        cursor.execute('INSERT INTO tickets (id_member, id_channel) VALUES (%s, %s)', (interaction.author.id, ticket_channel.id))
-                        connection.commit()
+                        await cursor.execute('INSERT INTO tickets (id_member, id_channel) VALUES (%s, %s)', (interaction.author.id, ticket_channel.id))
+                        await connection.commit()
 
                         ticket_embed = disnake.Embed(
                             title="Поддержка",
@@ -156,8 +152,8 @@ class ticket_buttons(disnake.ui.View):
                     else:
                         await interaction.send("Категория для тикетов не найдена.", ephemeral=True)
                 else:
-                    cursor.execute('SELECT id_channel FROM tickets WHERE id_member = %s', (interaction.author.id,))
-                    channel1 = cursor.fetchone()
+                    await cursor.execute('SELECT id_channel FROM tickets WHERE id_member = %s', (interaction.author.id,))
+                    channel1 = await cursor.fetchone()
                     if channel1:
                         await interaction.send(f"У вас уже есть тикет - <#{channel1['id_channel']}>, будьте терпиливее, ожидайте администрацию.", ephemeral=True)
                     else:
@@ -173,14 +169,14 @@ class ticket_system(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: disnake.Member):
-        connection = get_db_connection()
+        connection = await get_db_connection()
         try:
-            with connection.cursor() as cursor:
-                cursor.execute('SELECT id_channel FROM tickets WHERE id_member = %s', (member.id,))
-                check1 = cursor.fetchone()
+            async with connection.cursor() as cursor:
+                await cursor.execute('SELECT id_channel FROM tickets WHERE id_member = %s', (member.id,))
+                check1 = await cursor.fetchone()
                 if check1:
-                    cursor.execute('DELETE FROM tickets WHERE id_member = %s', (member.id,))
-                    connection.commit()
+                    await cursor.execute('DELETE FROM tickets WHERE id_member = %s', (member.id,))
+                    await connection.commit()
                     channel = self.bot.get_channel(check1['id_channel'])
                     if channel:
                         await channel.send(f"{member.name}, покинул сервер, <@403829627753070603>")
@@ -190,16 +186,16 @@ class ticket_system(commands.Cog):
     @commands.has_permissions(administrator=True)
     @commands.slash_command(description="Setup системы тикетов (Админская команда)")
     async def tstart(self, ctx):
-        connection = get_db_connection()
+        connection = await get_db_connection()
         try:
-            with connection.cursor() as cursor:
-                cursor.execute('''
+            async with connection.cursor() as cursor:
+                await cursor.execute('''
                     CREATE TABLE IF NOT EXISTS tickets (
                         id_member BIGINT,
                         id_channel BIGINT
                     )
                 ''')
-                connection.commit()
+                await connection.commit()
             tstartembed = disnake.Embed(
                 title="Успех",
                 colour=0x2F3136,
@@ -211,12 +207,11 @@ class ticket_system(commands.Cog):
 
     @tstart.error
     async def tstart_error(self, ctx, error):
-        """Обработчик ошибок для команды tstart."""
         if isinstance(error, MissingPermissions):
             await ctx.send("У вас недостаточно прав для использования этой команды.", ephemeral=True)
         else:
             await ctx.send("Произошла неизвестная ошибка.", ephemeral=True)
-            logger.error(f"Ошибка в команде tstart: {error}")
+            logger.error(f"Ошибка в команде tstart: {error}", exc_info=True)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -233,7 +228,6 @@ class ticket_system(commands.Cog):
             channel = ctx.channel
             message = await channel.fetch_message(message_id)
             
-            # Проверяем, есть ли уже кнопка на сообщении
             if not message.components:
                 await message.edit(view=ticket_buttons(bot=self.bot))
                 await ctx.send("Кнопка успешно добавлена к сообщению.", ephemeral=True)
@@ -242,17 +236,16 @@ class ticket_system(commands.Cog):
         except disnake.NotFound:
             await ctx.send("Сообщение с таким ID не найдено.", ephemeral=True)
         except Exception as e:
-            logger.error(f"Ошибка при добавлении кнопки: {e}")
+            logger.error(f"Ошибка при добавлении кнопки: {e}", exc_info=True)
             await ctx.send("Произошла ошибка при добавлении кнопки.", ephemeral=True)
 
     @add_ticket_button.error
     async def add_ticket_button_error(self, ctx, error):
-        """Обработчик ошибок для команды add_ticket_button."""
         if isinstance(error, MissingPermissions):
             await ctx.send("У вас недостаточно прав для использования этой команды.", ephemeral=True)
         else:
             await ctx.send("Произошла неизвестная ошибка.", ephemeral=True)
-            logger.error(f"Ошибка в команде add_ticket_button: {error}")
+            logger.error(f"Ошибка в команде add_ticket_button: {error}", exc_info=True)
 
 
 def setup(bot):
