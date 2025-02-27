@@ -1,4 +1,4 @@
-disnake==2.7.0
+disnake
 python-dotenv
 asyncio
 youtube_dl
@@ -8,3 +8,4 @@ PyNaCl
 babel
 pytz
 pymysql
+aiomysql
