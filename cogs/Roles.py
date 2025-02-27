@@ -1,9 +1,14 @@
 import disnake
 from disnake.ext import commands
-import pymysql
+import aiomysql
 import os
 from dotenv import load_dotenv
 from disnake.ext.commands import MissingPermissions
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Загружаем переменные из .env
 load_dotenv()
@@ -17,23 +22,23 @@ class Roles(commands.Cog):
     async def connect_to_mysql(self):
         """Подключение к MySQL."""
         try:
-            self.conn = pymysql.connect(
+            self.conn = await aiomysql.connect(
                 host=os.getenv('MYSQL_HOST'),
                 user=os.getenv('MYSQL_USER'),
                 password=os.getenv('MYSQL_PASSWORD'),
-                database=os.getenv('MYSQL_DB_rolles'),
-                cursorclass=pymysql.cursors.DictCursor
+                db=os.getenv('MYSQL_DB_rolles'),
+                cursorclass=aiomysql.DictCursor
             )
-            self.cursor = self.conn.cursor()
+            self.cursor = await self.conn.cursor()
             print("Успешное подключение к MySQL")
-        except pymysql.Error as e:
+        except aiomysql.Error as e:
             print(f"Ошибка подключения к MySQL: {e}")
 
     async def ensure_custom_roles_position(self, guild):
         """Проверяет и корректирует позиции всех кастомных ролей."""
         # Получаем роли бустеров и стандартной роли
-        booster_role = disnake.utils.get(guild.roles, name="мажор(бубустер)")  # Убедитесь, что название роли точное. Высшая роль ниже которой будут кастом роли
-        default_role = disnake.utils.get(guild.roles, name="Ботяры")  # Убедитесь, что название роли точное. Нисшая роль выше которой будут кастом роли
+        booster_role = disnake.utils.get(guild.roles, name="мажор(бубустер)")  # Убедитесь, что название роли точное
+        default_role = disnake.utils.get(guild.roles, name="Ботяры")  # Убедитесь, что название роли точное
 
         if not booster_role or not default_role:
             print("Роли бустеров или стандартной роли не найдены.")
@@ -45,8 +50,8 @@ class Roles(commands.Cog):
         # Проходим по всем ролям
         for role in all_roles:
             # Проверяем, является ли роль кастомной (созданной ботом)
-            self.cursor.execute("SELECT role_name FROM roles WHERE role_name = %s", (role.name,))
-            if self.cursor.fetchone():
+            await self.cursor.execute("SELECT role_name FROM roles WHERE role_name = %s", (role.name,))
+            if await self.cursor.fetchone():
                 # Проверяем, находится ли роль ниже стандартной роли
                 if role.position < default_role.position:
                     # Поднимаем роль выше стандартной роли
@@ -82,8 +87,8 @@ class Roles(commands.Cog):
             return
 
         # Проверяем, есть ли у пользователя уже роль
-        self.cursor.execute("SELECT role_name FROM roles WHERE user_id = %s", (ctx.author.id,))
-        existing_role = self.cursor.fetchone()
+        await self.cursor.execute("SELECT role_name FROM roles WHERE user_id = %s", (ctx.author.id,))
+        existing_role = await self.cursor.fetchone()
 
         if existing_role:
             await ctx.edit_original_response(content="У вас уже есть кастомная роль. Вы не можете создать более одной роли. Используйте /renrole для переименования.")
@@ -115,8 +120,8 @@ class Roles(commands.Cog):
         await ctx.author.add_roles(role)
 
         # Сохраняем название роли в базе данных
-        self.cursor.execute("INSERT INTO roles (user_id, role_name) VALUES (%s, %s)", (ctx.author.id, role_name))
-        self.conn.commit()
+        await self.cursor.execute("INSERT INTO roles (user_id, role_name) VALUES (%s, %s)", (ctx.author.id, role_name))
+        await self.conn.commit()
 
         # Проверяем и корректируем позиции всех кастомных ролей
         await self.ensure_custom_roles_position(ctx.guild)
@@ -146,8 +151,8 @@ class Roles(commands.Cog):
             return
 
         # Проверяем, есть ли у пользователя кастомная роль
-        self.cursor.execute("SELECT role_name FROM roles WHERE user_id = %s", (ctx.author.id,))
-        existing_role = self.cursor.fetchone()
+        await self.cursor.execute("SELECT role_name FROM roles WHERE user_id = %s", (ctx.author.id,))
+        existing_role = await self.cursor.fetchone()
 
         if not existing_role:
             await ctx.edit_original_response(content="У вас нет кастомной роли для переименования.")
@@ -172,8 +177,8 @@ class Roles(commands.Cog):
             await self.ensure_custom_roles_position(ctx.guild)
 
             # Обновляем название роли в базе данных
-            self.cursor.execute("UPDATE roles SET role_name = %s WHERE user_id = %s", (new_role_name, ctx.author.id))
-            self.conn.commit()
+            await self.cursor.execute("UPDATE roles SET role_name = %s WHERE user_id = %s", (new_role_name, ctx.author.id))
+            await self.conn.commit()
 
             await ctx.edit_original_response(content=f'Ваша роль была переименована на: {new_role_name}')
         else:
@@ -192,13 +197,13 @@ class Roles(commands.Cog):
             return
 
         # Создаем таблицу, если её нет
-        self.cursor.execute('''
+        await self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS roles (
                 user_id BIGINT PRIMARY KEY,
                 role_name VARCHAR(255) NOT NULL
             )
         ''')
-        self.conn.commit()
+        await self.conn.commit()
 
         await ctx.edit_original_response(embed=disnake.Embed(
             title="Успех",
@@ -212,11 +217,11 @@ class Roles(commands.Cog):
         if isinstance(error, MissingPermissions):
             await ctx.send("У вас недостаточно прав для выполнения этой команды. Требуются права администратора.", ephemeral=True)
 
-    def cog_unload(self):
+    async def cog_unload(self):
         """Закрываем соединение с базой данных при выгрузке кога."""
         if self.conn:
-            self.cursor.close()
-            self.conn.close()
+            await self.cursor.close()
+            await self.conn.close()
             print("Соединение с MySQL закрыто.")
 
 def setup(bot):
